@@ -1,249 +1,91 @@
-#include <GarrysMod/Lua/Interface.h>
-#include <dbg.h>
-#include <Color.h>
-#include <cstdint>
-#include <queue>
-#include <mutex>
+#include "main.hpp"
 
-namespace spew
+class CSpewListener : public ILoggingListener
 {
-
-struct Spew
-{
-	Spew( ) :
-		time( 0.0 ),
-		type( SPEW_MESSAGE ),
-		level( -1 )
-	{ }
-
-	Spew( SpewType_t type, int32_t level, const char *group, const Color &color, const char *msg ) :
-		time( Plat_FloatTime( ) ),
-		type( type ),
-		level( level ),
-		group( group ),
-		color( color ),
-		msg( msg )
-	{ }
-
-	double time;
-	SpewType_t type;
-	int32_t level;
-	std::string group;
-	Color color;
-	std::string msg;
-};
-
-static const size_t MaxMessages = 1000;
-static SpewOutputFunc_t original_spew = nullptr;
-static std::queue<Spew> spew_queue;
-static std::mutex spew_locker;
-static bool blocked_spews[SPEW_TYPE_COUNT] = { false, false, false, false, false };
-
-LUA_FUNCTION_STATIC( Get )
-{
-	size_t count = 1;
-	if( LUA->Top( ) != 0 )
-		count = static_cast<size_t>( LUA->CheckNumber( 1 ) );
-
-	size_t size = spew_queue.size( );
-	if( count > size )
-		count = size;
-
-	if( count == 0 )
-		return 0;
-
-	LUA->CreateTable( );
-
-	for( size_t k = 0; k < count; ++k )
+public:
+	void Log(const LoggingContext_t *pContext, const char *msg)
 	{
-		Spew spew;
-		{
-			std::lock_guard<std::mutex> lock( spew_locker );
-			spew = spew_queue.front( );
-			spew_queue.pop( );
+		int RED    = pContext->m_Color.r;
+		int GREEN  = pContext->m_Color.g;
+		int BLUE   = pContext->m_Color.b;
+		//int ALPHA  = pContext->m_Color.a;
+		
+		const LoggingSeverity_t Type = pContext->m_Severity;
+		
+		bool printcol = RED>0 || GREEN>0 || BLUE>0;
+		bool white = RED==255 && GREEN == 255 && BLUE == 255;
+		if (Type==LS_WARNING && white) {
+			RED=255;
+			GREEN=100;
+			BLUE=50;
+		} else if (Type==LS_MESSAGE && white) {
+			RED=200;
+			GREEN=235;
+			BLUE=255;
+		} else if ( (Type==LS_ERROR || Type==LS_ASSERT) && white) {
+			RED=255;
+			GREEN=0;
+			BLUE=0;
+		} else if (RED==156 && GREEN==241 && BLUE==255) { // Msg
+			RED=255;
+			//GREEN=241;
+			BLUE=156;
+		} else if (RED==136 && GREEN==221 && BLUE==221) { // MsgN
+			RED=221;
+			//GREEN=221;
+			BLUE=136;
+		} else if (RED==136 && GREEN==221 && BLUE==255) { // error
+			RED=255;
+			GREEN=221 - 120;
+			BLUE=136 - 80;
 		}
-
-		LUA->PushNumber( k + 1 );
-		LUA->CreateTable( );
-
-		LUA->PushNumber( spew.time );
-		LUA->SetField( -2, "time" );
-
-		LUA->PushNumber( spew.type );
-		LUA->SetField( -2, "type" );
-
-		LUA->PushNumber( spew.level );
-		LUA->SetField( -2, "message" );
-
-		LUA->PushString( spew.group.c_str( ) );
-		LUA->SetField( -2, "group" );
-
-		LUA->CreateTable( );
-
-		LUA->PushNumber( spew.color[0] );
-		LUA->SetField( -2, "r" );
-
-		LUA->PushNumber( spew.color[1] );
-		LUA->SetField( -2, "g" );
-
-		LUA->PushNumber( spew.color[2] );
-		LUA->SetField( -2, "b" );
-
-		LUA->PushNumber( spew.color[3] );
-		LUA->SetField( -2, "a" );
-
-		LUA->SetField( -2, "color" );
-
-		LUA->PushString( spew.msg.c_str( ) );
-		LUA->SetField( -2, "message" );
-
-		LUA->SetTable( -3 );
+		
+		if (!printcol) {
+			if (Type != LS_MESSAGE) {
+				RED = 255;
+				BLUE = 255;
+			} else {
+				printf( "%s", msg );
+				return;
+			}
+		}
+		
+		int val = rgb2xterm(RED,GREEN,BLUE);
+		//const char * grp = GetSpewOutputGroup();
+		
+		//printf("<%d,%d,%d,%d|%d,%d,%s>\x1b[38;5;%dm",RED,GREEN,BLUE,ALPHA,  Type,GetSpewOutputLevel(),grp?grp:"", val); // set color
+		
+		char buf[20] = "";
+		snprintf(buf,sizeof(buf),"\x1b[38;5;%dm",val); // set color
+		
+		
+		printf( "%s", buf );
+		printf( "%s", msg );
+		printf( "\x1b[0m" );
+		
 	}
+} g_SpewListener;
 
-	return 1;
-}
-
-LUA_FUNCTION_STATIC( Block )
-{
-	int32_t type = -1;
-	if( LUA->Top( ) != 0 )
-		type = static_cast<int32_t>( LUA->CheckNumber( 1 ) );
-
-	switch( type )
-	{
-	case -1:
-		for( size_t k = 0; k < SPEW_TYPE_COUNT; ++k )
-			blocked_spews[k] = true;
-
-		LUA->PushBool( true );
-		break;
-
-	case SPEW_MESSAGE:
-	case SPEW_WARNING:
-	case SPEW_ASSERT:
-	case SPEW_ERROR:
-	case SPEW_LOG:
-		blocked_spews[type] = true;
-		LUA->PushBool( true );
-		break;
-
-	default:
-		LUA->PushBool( false );
-		break;
-	}
-
-	return 1;
-}
-
-LUA_FUNCTION_STATIC( Unblock )
-{
-	int32_t type = -1;
-	if( LUA->Top( ) != 0 )
-		type = static_cast<int32_t>( LUA->CheckNumber( 1 ) );
-
-	switch( type )
-	{
-	case -1:
-		for( size_t k = 0; k < SPEW_TYPE_COUNT; ++k )
-			blocked_spews[k] = false;
-
-		LUA->PushBool( true );
-		break;
-
-	case SPEW_MESSAGE:
-	case SPEW_WARNING:
-	case SPEW_ASSERT:
-	case SPEW_ERROR:
-	case SPEW_LOG:
-		blocked_spews[type] = false;
-		LUA->PushBool( true );
-		break;
-
-	default:
-		LUA->PushBool( false );
-		break;
-	}
-
-	return 1;
-}
-
-static SpewRetval_t EngineSpewReceiver( SpewType_t type, const char *msg )
-{
-	std::lock_guard<std::mutex> lock( spew_locker );
-	if( spew_queue.size( ) >= MaxMessages )
-		spew_queue.pop( );
-
-	spew_queue.emplace(
-		type,
-		GetSpewOutputLevel( ),
-		GetSpewOutputGroup( ),
-		*GetSpewOutputColor( ),
-		msg
-	);
-
-	return ( type < SPEW_TYPE_COUNT && blocked_spews[type] ) ? SPEW_CONTINUE :
-		original_spew( type, msg );
-}
-
-static void Initialize( GarrysMod::Lua::ILuaBase *LUA )
-{
-	original_spew = GetSpewOutputFunc( );
-	SpewOutputFunc( EngineSpewReceiver );
-
-	LUA->CreateTable( );
-
-	LUA->PushString( "spew 1.0.0" );
-	LUA->SetField( -2, "Version" );
-
-	// version num follows LuaJIT style, xxyyzz
-	LUA->PushNumber( 10000 );
-	LUA->SetField( -2, "VersionNum" );
-
-	LUA->PushNumber( SPEW_MESSAGE );
-	LUA->SetField( -2, "MESSAGE" );
-
-	LUA->PushNumber( SPEW_WARNING );
-	LUA->SetField( -2, "WARNING" );
-
-	LUA->PushNumber( SPEW_ASSERT );
-	LUA->SetField( -2, "ASSERT" );
-
-	LUA->PushNumber( SPEW_ERROR );
-	LUA->SetField( -2, "ERROR" );
-
-	LUA->PushNumber( SPEW_LOG );
-	LUA->SetField( -2, "LOG" );
-
-	LUA->PushCFunction( Get );
-	LUA->SetField( -2, "Get" );
-
-	LUA->PushCFunction( Block );
-	LUA->SetField( -2, "Block" );
-
-	LUA->PushCFunction( Unblock );
-	LUA->SetField( -2, "Unblock" );
-
-	LUA->SetField( GarrysMod::Lua::INDEX_GLOBAL, "spew" );
-}
-
-static void Deinitialize( GarrysMod::Lua::ILuaBase *LUA )
-{
-	SpewOutputFunc( original_spew );
-
-	LUA->PushNil( );
-	LUA->SetField( GarrysMod::Lua::INDEX_GLOBAL, "spew" );
-}
-
-}
 
 GMOD_MODULE_OPEN( )
 {
-	spew::Initialize( LUA );
+	
+	void *tier0lib;
+	
+	tier0lib = dlopen("bin/linux64/libtier0.so",RTLD_LAZY);
+	
+	*(void**)&LoggingSystem_PushLoggingState = dlsym(tier0lib, "LoggingSystem_PushLoggingState");
+	*(void**)&LoggingSystem_RegisterLoggingListener = dlsym(tier0lib, "LoggingSystem_RegisterLoggingListener");
+	*(void**)&LoggingSystem_ResetCurrentLoggingState = dlsym(tier0lib, "LoggingSystem_ResetCurrentLoggingState");
+	*(void**)&LoggingSystem_PopLoggingState = dlsym(tier0lib, "LoggingSystem_PopLoggingState");
+	
+	LoggingSystem_PushLoggingState(false, true);
+	LoggingSystem_RegisterLoggingListener(&g_SpewListener);
 	return 0;
 }
 
 GMOD_MODULE_CLOSE( )
 {
-	spew::Deinitialize( LUA );
+	LoggingSystem_PopLoggingState(false);
 	return 0;
 }

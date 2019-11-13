@@ -11,11 +11,9 @@ end
 
 include(gmcommon)
 
-CreateWorkspace({name = "spew"})
+CreateWorkspace({name = "xterm"})
 	CreateProject({serverside = true})
-		IncludeSDKCommon()
-		IncludeSDKTier0()
 
-	CreateProject({serverside = false})
-		IncludeSDKCommon()
-		IncludeSDKTier0()
+		IncludeLuaShared()
+		IncludeScanning()
+		IncludeDetouring()
