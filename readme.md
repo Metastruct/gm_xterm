@@ -1,4 +1,4 @@
-# gm_spew
+# gm_xterm
 
 A Garry's Mod module that intercepts the engine's messages and adds color codes.
 
